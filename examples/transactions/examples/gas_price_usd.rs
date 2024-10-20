@@ -2,19 +2,18 @@
 
 use alloy::{
     network::TransactionBuilder,
-    node_bindings::Anvil,
     primitives::{address, utils::format_units, Address, Bytes, U256},
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
     sol,
     sol_types::SolCall,
+    eips::BlockId,
 };
-use eyre::Result;
+use std::error::Error;
 use std::str::FromStr;
 
 const ETH_USD_FEED: Address = address!("5f4eC3Df9cbd43714FE2740f5E3616155c5b8419");
 const ETH_USD_FEED_DECIMALS: u8 = 8;
-const ETH_DECIMALS: u32 = 18;
 
 // Codegen from excerpt of Chainlink Aggregator interface.
 // See: https://etherscan.io/address/0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419#code
@@ -24,42 +23,20 @@ sol!(
 );
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    // Spin up a forked Anvil node.
-    // Ensure `anvil` is available in $PATH.
-    let anvil = Anvil::new().fork("https://eth.merkle.io").try_spawn()?;
-
-    // Create a provider.
-    let rpc_url = anvil.endpoint().parse()?;
+async fn main() -> Result<(), Box<dyn Error>> {
+    let rpc_url = "http://192.168.100.10:8545".parse()?;
     let provider = ProviderBuilder::new().on_http(rpc_url);
 
-    // Create a call to get the latest answer from the Chainlink ETH/USD feed.
-    let call = latestAnswerCall {}.abi_encode();
-    let input = Bytes::from(call);
+    let tx = TransactionRequest::default()
+      .with_to(ETH_USD_FEED)
+      .with_input(Bytes::from(latestAnswerCall {}.abi_encode()));
 
-    // Call the Chainlink ETH/USD feed contract.
-    let tx = TransactionRequest::default().with_to(ETH_USD_FEED).with_input(input);
-
-    let response = provider.call(&tx).await?;
+    let response = provider.call(&tx).block(BlockId::latest()).await?;
     let result = U256::from_str(&response.to_string())?;
+    let usd = format_units(result, ETH_USD_FEED_DECIMALS)?.parse::<f64>()?;
 
-    // Get the gas price of the network.
-    let wei_per_gas = provider.get_gas_price().await?;
-
-    // Convert the gas price to Gwei and USD.
-    let gwei = format_units(wei_per_gas, "gwei")?.parse::<f64>()?;
-    let usd = get_usd_value(wei_per_gas, result)?;
-
-    println!("Gas price in Gwei: {gwei}");
-    println!("Gas price in USD: {usd}");
+    print!("{:.2}", usd);
 
     Ok(())
 }
 
-fn get_usd_value(amount: u128, price_usd: U256) -> Result<f64> {
-    let base = U256::from(10).pow(U256::from(ETH_DECIMALS));
-    let value = U256::from(amount) * price_usd / base;
-    let formatted = format_units(value, ETH_USD_FEED_DECIMALS)?.parse::<f64>()?;
-
-    Ok(formatted)
-}
